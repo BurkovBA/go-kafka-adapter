@@ -1,6 +1,2 @@
-github.com/BurkovBA/django-rest-framework-mongoengine v3.3.0+incompatible h1:HsveGSifKxmHmH0ILJmNE2+9gA0eIPDhDl3dhYg8Buo=
-github.com/BurkovBA/django-rest-framework-mongoengine v3.3.0+incompatible/go.mod h1:Fp9tggLOFa2tiLPWyJ4h6Ah4Nd51bBbW1KY9FQDenQs=
 github.com/confluentinc/confluent-kafka-go v1.6.1 h1:YxM/UtMQ2vgJX2gIgeJFUD0ANQYTEvfo4Cs4qKUlmGE=
 github.com/confluentinc/confluent-kafka-go v1.6.1/go.mod h1:u2zNLny2xq+5rWeTQjFHbDzzNuba4P1vo31r9r4uAdg=
-github.com/mongoengine/mongoengine v0.23.0 h1:o1WdB2cT9xMha2Y6x6fwxI0SkdMCEx8ATbVxnYmvUuw=
-github.com/mongoengine/mongoengine v0.23.0/go.mod h1:jQ0ZQNnRs3Foj+1GAl8UsRXnVNSa1Cg9eeaAKSSVt90=
