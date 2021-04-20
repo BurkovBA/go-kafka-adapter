@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	// _ "net/http/pprof"
 )
 
 func main() {
+	// go func() {
+	//     log.Println(http.ListenAndServe("localhost:6060", nil))
+	// }()
+
 	var ctx context.Context = context.Background()
 
 	var callback = func(reader io.Reader) error {

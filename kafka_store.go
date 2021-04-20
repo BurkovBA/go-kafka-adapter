@@ -17,12 +17,12 @@ type KafkaStore struct {
 	ConsumerGroupId  string // id of our consumer group, default: "goConsumerGroup"
 }
 
-func NewKafkaStore(BootstrapServers string, Topic string, consumerGroupId string) *KafkaStore {
+func NewKafkaStore(BootstrapServers string, Topic string, ConsumerGroupId string) *KafkaStore {
 	kafkaStore := &KafkaStore{}
 
 	kafkaStore.BootstrapServers = BootstrapServers
 	kafkaStore.Topic = Topic
-	kafkaStore.consumerGroupId = consumerGroupId
+	kafkaStore.ConsumerGroupId = ConsumerGroupId
 
 	return kafkaStore
 }
@@ -34,7 +34,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	// bootstrap the consumer
 	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
 		"bootstrap.servers": kafkaStore.BootstrapServers,
-		"group.id":          kafkaStore.consumerGroupId,
+		"group.id":          kafkaStore.ConsumerGroupId,
 		"auto.offset.reset": "earliest",
 	})
 	defer consumer.Close()
@@ -61,7 +61,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 		}
 	}()
 
-	err = kafkaStore.pollReadMessage(consumer, writer)
+	err = kafkaStore.readMessage(consumer, writer)
 	if err != nil {
 		return err
 	}
@@ -75,11 +75,14 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 // This implementation we won't be able to Seek/Assign the offset.
 // Mostly stolen from: https://github.com/martinhynar/kafka-consumer/blob/AssignedPartitions/kafka-consumer.go
 func (kafkaStore KafkaStore) poll(consumer *kafka.Consumer, writer *io.PipeWriter) error {
-	var run bool
-	for run == true {
+	fmt.Println("Entering poll()")
 
+	run := true
+	for run == true {
+		fmt.Println("Running an iteration of poll")
 		event := consumer.Poll(10000)
 		if event == nil {
+			fmt.Println("Timeout in Poll(), Event is nil")
 			continue
 		}
 
@@ -118,6 +121,7 @@ func (kafkaStore KafkaStore) poll(consumer *kafka.Consumer, writer *io.PipeWrite
 			fmt.Printf("kafka@%d : %s", milliseconds(&e.Timestamp), string(e.Value))
 		case kafka.PartitionEOF:
 			fmt.Printf("%% Reached %v\n", e)
+			run = false
 		case kafka.Error:
 			fmt.Printf("%% Error: %v\n", e)
 			run = false
@@ -133,13 +137,64 @@ func milliseconds(moment *time.Time) int64 {
 	return moment.UnixNano() / int64(time.Millisecond)
 }
 
+// reset the offsets of topic partitions, the consumer listens from, to the beginning
+func (kafkaStore KafkaStore) resetTopicPartitions(consumer *kafka.Consumer) error {
+	// kafka assignment is empty until we ran Poll() for the first time
+	event := consumer.Poll(10000)
+	if event == nil {
+		fmt.Println("Timeout in Poll(), Event is nil")
+		return nil
+	}
+
+	// get current topic partitions
+	topicPartitions, err := consumer.Assignment()
+	fmt.Printf("Default partitions in resetTopicPartitions(): %s\n", topicPartitions)
+	if err != nil {
+		fmt.Printf("Failed to retrieve consumer.Assignment()\n")
+		return err
+	}
+
+	// define that we want the earliest offsets available for each topic partition
+	var modifiedTopicPartitions []kafka.TopicPartition = make([]kafka.TopicPartition, len(topicPartitions))
+	var start kafka.Offset = kafka.OffsetBeginning
+	for index, partition := range topicPartitions {
+		modifiedTopicPartitions[index] = kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: partition.Partition, Offset: start}
+		fmt.Printf("%s[%d]@%v\n", *partition.Topic, partition.Partition, partition.Offset)
+	}
+
+	// query the earliest offset for each partition to reset to
+	resultTopicPartitions, err := consumer.OffsetsForTimes(modifiedTopicPartitions, 10000)
+	if err != nil {
+		fmt.Printf("Timestamp offset search error: %v\n", err)
+		return err
+	} else {
+		// assign the earliest offsets available, check assignment went well
+		err = consumer.Assign(resultTopicPartitions)
+		fmt.Println("Partition re-assignment")
+		for _, partition := range resultTopicPartitions {
+			fmt.Printf("%s[%d]@%v", *partition.Topic, partition.Partition, partition.Offset)
+		}
+		if err != nil {
+			fmt.Printf("Partition assignment error: %v\n", err)
+			return err
+		}
+	}
+	return nil
+}
+
 // Implementation of Kafka consumer polling operation via a high-level ReadMessage() function.
 // Apparently with this implementation we won't be able to Seek/Assign the offset.
-func (kafkaStore KafkaStore) pollReadMessage(consumer *kafka.Consumer, writer *io.PipeWriter) error {
+func (kafkaStore KafkaStore) readMessage(consumer *kafka.Consumer, writer *io.PipeWriter) error {
+	// reset topic partitions offsets to the earliest first
+	err := kafkaStore.resetTopicPartitions(consumer)
+	if err != nil {
+		return err
+	}
+
 	// iteratively feed messages from kafka topic into the pipe
 	for {
 		fmt.Println("Reading a message from kafka")
-		msg, err := consumer.ReadMessage(time.Second * 10) // use -1 to eliminate timeout and wait indefinitely
+		msg, err := consumer.ReadMessage(-1) // use -1 to eliminate timeout and wait indefinitely or time.Second * 10 for timeout of 10 seconds
 		if err != nil {
 			return err
 		}
