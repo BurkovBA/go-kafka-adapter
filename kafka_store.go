@@ -11,6 +11,16 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
+// Kafka entities:
+// - broker - single instance of Kakfa; you might have a cluster with e.g. 3 Kafka brokers on 3 separate servers for HA
+// - topic - a single message queue, e.g. 'flats'
+// - partition - you can shard topic by some criterion into partitions, e.g. split 'flats' into 'Moscow', 'St.Petersburg', 'Novosibirsk' partitions
+// - replica - each partition can have a master and several replicas, each replica on ots broker; you can set up something like sync/async replication between them
+// - consumer - a process that reads messages from Kafka; it can listen to multiple topics and within a topic to several partitions
+// - consumer group - a set of (possibly interchangeable) consumers which have a single offset per topic partition
+// - offset - the incremental index of a message, unique within a topic partition for a consumer group
+// - producer - a process that writes messages into Kafka
+// See: https://www.oreilly.com/library/view/kafka-the-definitive/9781491936153/ch04.html
 type KafkaStore struct {
 	BootstrapServers string // kafka brokers to negotiate the protocol with upon consumer bootstrap, default: "localhost:29092"
 	Topic            string // name of the topic that stores our data, default: "myTopic"
@@ -137,29 +147,22 @@ func milliseconds(moment *time.Time) int64 {
 	return moment.UnixNano() / int64(time.Millisecond)
 }
 
-// reset the offsets of topic partitions, the consumer listens from, to the beginning
+// Reset the offsets of topic partitions, the consumer listens from, to the beginning.
+//
+// Kafka has lower-level and higher-level APIs for assigning consumers to partitions:
+// - Assign() manually assigns a consumer to a specific partition of a topic.
+// - Subscirbe() assigns a consumer to a topic and dynamically rebalances consumers in
+//   that consumer group between partitions, should need arise. This is the preferred way.
 func (kafkaStore KafkaStore) resetTopicPartitions(consumer *kafka.Consumer) error {
-	// kafka assignment is empty until we ran Poll() for the first time
-	event := consumer.Poll(10000)
-	if event == nil {
-		fmt.Println("Timeout in Poll(), Event is nil")
-		return nil
-	}
-
 	// get current topic partitions
-	topicPartitions, err := consumer.Assignment()
-	fmt.Printf("Default partitions in resetTopicPartitions(): %s\n", topicPartitions)
-	if err != nil {
-		fmt.Printf("Failed to retrieve consumer.Assignment()\n")
-		return err
-	}
+	metadata, err := consumer.GetMetadata(&kafkaStore.Topic, false, 10000)
 
 	// define that we want the earliest offsets available for each topic partition
-	var modifiedTopicPartitions []kafka.TopicPartition = make([]kafka.TopicPartition, len(topicPartitions))
+	var modifiedTopicPartitions []kafka.TopicPartition = make([]kafka.TopicPartition, len(metadata.Topics[kafkaStore.Topic].Partitions))
 	var start kafka.Offset = kafka.OffsetBeginning
-	for index, partition := range topicPartitions {
-		modifiedTopicPartitions[index] = kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: partition.Partition, Offset: start}
-		fmt.Printf("%s[%d]@%v\n", *partition.Topic, partition.Partition, partition.Offset)
+	for index, partitionMetadata := range metadata.Topics[kafkaStore.Topic].Partitions {
+		modifiedTopicPartitions[index] = kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: partitionMetadata.ID, Offset: start}
+		fmt.Printf("%s[%d]@%v\n", *modifiedTopicPartitions[index].Topic, modifiedTopicPartitions[index].Partition, modifiedTopicPartitions[index].Offset)
 	}
 
 	// query the earliest offset for each partition to reset to
@@ -172,7 +175,7 @@ func (kafkaStore KafkaStore) resetTopicPartitions(consumer *kafka.Consumer) erro
 		err = consumer.Assign(resultTopicPartitions)
 		fmt.Println("Partition re-assignment")
 		for _, partition := range resultTopicPartitions {
-			fmt.Printf("%s[%d]@%v", *partition.Topic, partition.Partition, partition.Offset)
+			fmt.Printf("%s[%d]@%v\n", *partition.Topic, partition.Partition, partition.Offset)
 		}
 		if err != nil {
 			fmt.Printf("Partition assignment error: %v\n", err)
