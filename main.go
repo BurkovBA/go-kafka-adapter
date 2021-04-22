@@ -7,11 +7,7 @@ import (
 	// _ "net/http/pprof"
 )
 
-func main() {
-	// go func() {
-	// log.Println(http.ListenAndServe("localhost:6060", nil))
-	// }()
-
+func TestConsumer() {
 	var ctx context.Context = context.Background()
 
 	var callback = func(reader io.Reader) error {
@@ -36,4 +32,33 @@ func main() {
 
 	var kafkaStore *KafkaStore = NewKafkaStore("localhost:29092", "myTopic", "goConsumerGroup")
 	kafkaStore.LoadMeta(ctx, callback)
+	return
+}
+
+func TestProducer() {
+	var ctx context.Context = context.Background()
+	var kafkaStore *KafkaStore = NewKafkaStore("localhost:29092", "myTopic", "")
+
+	var callback = func(writer io.Writer) error {
+		msg := []byte("This is a programmatically produced message 1")
+		_, err := writer.Write(msg)
+		if err != nil {
+			fmt.Printf("Error encountered while Writing: %s \n", err)
+			return err
+		}
+		return nil
+	}
+
+	err := kafkaStore.AppendMeta(ctx, callback)
+	if err != nil {
+		fmt.Printf("TestProducer() error: %s\n", err)
+	}
+	return
+}
+
+func main() {
+	// go func() {
+	// log.Println(http.ListenAndServe("localhost:6060", nil))
+	// }()
+	TestConsumer()
 }

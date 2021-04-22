@@ -236,11 +236,72 @@ func (kafkaStore KafkaStore) ReplaceMeta(ctx context.Context, callback func(writ
 }
 
 func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(writer io.Writer) error) error {
-	// TODO: implement custom kafka writer and pass it to callback
+	reader, writer := io.Pipe()
 
-	// writer := io.Writer()
+	// create a producer for Kafka
+	producer, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": kafkaStore.BootstrapServers})
+	if err != nil {
+		fmt.Printf("Error creating consumer: %s", err)
+		return err
+	}
+	defer producer.Close()
 
-	// callback(writer)
+	// initialze the callback goroutine
+	var waitgroup sync.WaitGroup
+	waitgroup.Add(1)
+	go func() error {
+		err := callback(writer)
+		waitgroup.Done()
+		if err != nil {
+			return err
+			// TODO: implemeny proper error propagation logic
+		}
+		return nil
+	}()
 
-	return errors.New("not implemented")
+	// initialize Kafka delivery report handler
+	go func() {
+		for event := range producer.Events() {
+			switch eventType := event.(type) {
+			case *kafka.Message:
+				if eventType.TopicPartition.Error != nil {
+					fmt.Printf("Delivery failed: %v\n", eventType.TopicPartition)
+					// TODO: implement proper error propagation logic!!!!!!!!!!!!!!!!!!
+				} else {
+					fmt.Printf("Successfully delivered: %v\n", eventType.TopicPartition)
+				}
+			}
+		}
+	}()
+
+	for {
+		buffer := make([]byte, 1000000)
+		bytesRead, err := reader.Read(buffer)
+		// TODO: do we need a delimiter between separate messages?
+
+		// handle EOF or error in the reader
+		switch err {
+		case io.EOF:
+			break
+		default:
+			return err
+		}
+
+		// TODO: handle buffer overflow!!!!!!!!!!!!
+
+		// send payload to Kafka
+		payload := buffer[0:bytesRead]
+		message := kafka.Message{
+			TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
+			Value:          []byte(payload),
+		}
+		producer.Produce(&message, nil)
+	}
+
+	waitgroup.Wait()
+
+	// Wait for message deliveries before shutting down
+	producer.Flush(15 * 1000)
+
+	return nil
 }
