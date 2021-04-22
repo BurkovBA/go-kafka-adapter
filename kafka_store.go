@@ -67,7 +67,12 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 		defer waitgroup.Done()
 		err2 := callback(reader)
 		if err2 != nil {
-			panic(err2)
+			switch err2 {
+			case io.EOF:
+				return
+			default:
+				panic(err2)
+			}
 		}
 	}()
 
@@ -153,7 +158,7 @@ func milliseconds(moment *time.Time) int64 {
 // - Assign() manually assigns a consumer to a specific partition of a topic.
 // - Subscirbe() assigns a consumer to a topic and dynamically rebalances consumers in
 //   that consumer group between partitions, should need arise. This is the preferred way.
-func (kafkaStore KafkaStore) resetTopicPartitions(consumer *kafka.Consumer) error {
+func (kafkaStore KafkaStore) resetTopicPartitionsOffsets(consumer *kafka.Consumer) error {
 	// get current topic partitions
 	metadata, err := consumer.GetMetadata(&kafkaStore.Topic, false, 10000)
 
@@ -189,7 +194,7 @@ func (kafkaStore KafkaStore) resetTopicPartitions(consumer *kafka.Consumer) erro
 // Apparently with this implementation we won't be able to Seek/Assign the offset.
 func (kafkaStore KafkaStore) readMessage(consumer *kafka.Consumer, writer *io.PipeWriter) error {
 	// reset topic partitions offsets to the earliest first
-	err := kafkaStore.resetTopicPartitions(consumer)
+	err := kafkaStore.resetTopicPartitionsOffsets(consumer)
 	if err != nil {
 		return err
 	}
@@ -219,6 +224,7 @@ func (kafkaStore KafkaStore) readMessage(consumer *kafka.Consumer, writer *io.Pi
 		currentOffset := int64(msg.TopicPartition.Offset)
 		fmt.Printf("currentOffset = %d, highWatermark = %d\n", currentOffset, highWatermark)
 		if highWatermark == currentOffset+1 {
+			fmt.Printf("Reached highWatermark, closing the writer.\n")
 			writer.Close()
 			return nil
 		}
