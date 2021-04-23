@@ -167,7 +167,7 @@ func (kafkaStore KafkaStore) resetTopicPartitionsOffsets(consumer *kafka.Consume
 	var start kafka.Offset = kafka.OffsetBeginning
 	for index, partitionMetadata := range metadata.Topics[kafkaStore.Topic].Partitions {
 		modifiedTopicPartitions[index] = kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: partitionMetadata.ID, Offset: start}
-		fmt.Printf("%s[%d]@%v\n", *modifiedTopicPartitions[index].Topic, modifiedTopicPartitions[index].Partition, modifiedTopicPartitions[index].Offset)
+		fmt.Printf("resetTopicPartitionsOffsets() preparing to re-assign offsets: %s[%d]@%v\n", *modifiedTopicPartitions[index].Topic, modifiedTopicPartitions[index].Partition, modifiedTopicPartitions[index].Offset)
 	}
 
 	// query the earliest offset for each partition to reset to
@@ -175,18 +175,19 @@ func (kafkaStore KafkaStore) resetTopicPartitionsOffsets(consumer *kafka.Consume
 	if err != nil {
 		fmt.Printf("Timestamp offset search error: %v\n", err)
 		return err
-	} else {
-		// assign the earliest offsets available, check assignment went well
-		err = consumer.Assign(resultTopicPartitions)
-		fmt.Println("Partition re-assignment")
-		for _, partition := range resultTopicPartitions {
-			fmt.Printf("%s[%d]@%v\n", *partition.Topic, partition.Partition, partition.Offset)
-		}
-		if err != nil {
-			fmt.Printf("Partition assignment error: %v\n", err)
-			return err
-		}
 	}
+
+	// assign the earliest offsets available, check assignment went well
+	err = consumer.Assign(resultTopicPartitions)
+	fmt.Println("Partition re-assignment")
+	for _, partition := range resultTopicPartitions {
+		fmt.Printf("resetTopicPartitionsOffsets() re-assigned offsets: %s[%d]@%v\n", *partition.Topic, partition.Partition, partition.Offset)
+	}
+	if err != nil {
+		fmt.Printf("Partition assignment error: %v\n", err)
+		return err
+	}
+
 	return nil
 }
 
@@ -245,63 +246,80 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 		return err
 	}
 	defer producer.Close()
+	fmt.Println("Initialized new producer")
 
-	// initialze the callback goroutine
-	var waitgroup sync.WaitGroup
-	waitgroup.Add(1)
-	go func() error {
-		err := callback(writer)
-		waitgroup.Done()
+	// call the callback
+	producerErrors := make(chan error, 0)
+	producerCallback := func(producerErrors chan error) {
+		err = callback(writer)
 		if err != nil {
-			return err
-			// TODO: implemeny proper error propagation logic
+			fmt.Printf("Error in callback: %s", err)
+			producerErrors <- err
+		} else {
+			producerErrors <- nil
 		}
-		return nil
-	}()
-
-	// initialize Kafka delivery report handler
-	go func() {
-		for event := range producer.Events() {
-			switch eventType := event.(type) {
-			case *kafka.Message:
-				if eventType.TopicPartition.Error != nil {
-					fmt.Printf("Delivery failed: %v\n", eventType.TopicPartition)
-					// TODO: implement proper error propagation logic!!!!!!!!!!!!!!!!!!
-				} else {
-					fmt.Printf("Successfully delivered: %v\n", eventType.TopicPartition)
-				}
-			}
-		}
-	}()
-
-	for {
-		buffer := make([]byte, 1000000)
-		bytesRead, err := reader.Read(buffer)
-		// TODO: do we need a delimiter between separate messages?
-
-		// handle EOF or error in the reader
-		switch err {
-		case io.EOF:
-			break
-		default:
-			return err
-		}
-
-		// TODO: handle buffer overflow!!!!!!!!!!!!
-
-		// send payload to Kafka
-		payload := buffer[0:bytesRead]
-		message := kafka.Message{
-			TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
-			Value:          []byte(payload),
-		}
-		producer.Produce(&message, nil)
 	}
+	go producerCallback(producerErrors)
 
-	waitgroup.Wait()
+	buffer := make([]byte, 1000000)
+	// TODO: handle buffer overflow!!!!!!!!!!!!
+	fmt.Println("Preparing to Read()")
+	bytesRead, err := reader.Read(buffer)
+	fmt.Println("Done reading")
 
-	// Wait for message deliveries before shutting down
+	// handle EOF or error in the reader
+	switch err {
+	case io.EOF:
+		break
+	case nil:
+		break
+	default:
+		fmt.Printf("AppendMeta(): failed to read message: %s\n", err)
+		return err
+	}
+	fmt.Println("Done switching err after reading")
+
+	err = <-producerErrors
+	if err != nil {
+		fmt.Printf("AppendMeta(): Failed to receive message from callback: %s \n", err)
+		return nil
+	}
+	fmt.Println("Done checking producer err")
+
+	// Optional delivery channel, if not specified the Producer object's
+	// .Events channel is used.
+	deliveryChan := make(chan kafka.Event)
+	defer close(deliveryChan)
+
+	fmt.Println("Preparing to Produce() message")
+	// send payload to Kafka
+	payload := buffer[0:bytesRead]
+	fmt.Printf("AppendMeta() payload = %s\n", payload)
+	message := kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
+		Value:          []byte(payload),
+	}
+	producer.Produce(&message, deliveryChan)
+	fmt.Println("Done Producing message")
 	producer.Flush(15 * 1000)
+	fmt.Println("Done Flushing message")
+
+	// check if the delivery succeeded
+	event := <-deliveryChan
+	fmt.Println("Retrieved an event from Kafka")
+	switch message := event.(type) {
+	case *kafka.Message:
+		if message.TopicPartition.Error != nil {
+			fmt.Printf("AppendMeta(): delivery to Kafka failed: %v\n", message.TopicPartition.Error)
+			return message.TopicPartition.Error
+		} else {
+			fmt.Printf("AppendMeta(): delivered message to topic %s [%d] at offset %v\n",
+				*message.TopicPartition.Topic, message.TopicPartition.Partition, message.TopicPartition.Offset)
+		}
+	default:
+		fmt.Printf("Producer event is not a Kafka message")
+	}
+	fmt.Println("Done retrieving event from Kafka")
 
 	return nil
 }
