@@ -16,6 +16,10 @@ Build command
 -------------
 `go build -tags dynamic main.go kafka_store.go`
 
+Test command
+------------
+`go test -tags dynamic kafka_store.go kafka_store_test.go`
+`ok      command-line-arguments  17.199s`
 
 Kafka management commands
 -------------------------

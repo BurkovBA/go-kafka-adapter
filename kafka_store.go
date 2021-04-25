@@ -105,7 +105,7 @@ func (kafkaStore KafkaStore) poll(consumer *kafka.Consumer, writer *io.PipeWrite
 		case kafka.AssignedPartitions:
 			fmt.Println("Partitions assigned")
 			for _, ap := range e.Partitions {
-				fmt.Printf("%s[%d]@%v", ap.Topic, ap.Partition, ap.Offset)
+				fmt.Printf("%s[%d]@%v", *ap.Topic, ap.Partition, ap.Offset)
 			}
 			consumer.Assign(e.Partitions)
 
@@ -122,7 +122,7 @@ func (kafkaStore KafkaStore) poll(consumer *kafka.Consumer, writer *io.PipeWrite
 				err = consumer.Assign(rewindTP)
 				fmt.Println("Partition re-assignment")
 				for _, ap := range rewindTP {
-					fmt.Printf("%s[%d]@%v", ap.Topic, ap.Partition, ap.Offset)
+					fmt.Printf("%s[%d]@%v", *ap.Topic, ap.Partition, ap.Offset)
 				}
 				if err != nil {
 					fmt.Printf("Partition assignment error: %v\n", err)
