@@ -288,24 +288,25 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 
 	// Optional delivery channel, if not specified the Producer object's
 	// .Events channel is used.
-	deliveryChan := make(chan kafka.Event)
-	defer close(deliveryChan)
+	// deliveryChan := make(chan kafka.Event)
+	// defer close(deliveryChan)
 
 	fmt.Println("Preparing to Produce() message")
 	// send payload to Kafka
 	payload := buffer[0:bytesRead]
 	fmt.Printf("AppendMeta() payload = %s\n", payload)
+	fmt.Printf("kafka.PartitionAny = %d\n", kafka.PartitionAny)
 	message := kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
 		Value:          []byte(payload),
 	}
-	producer.Produce(&message, deliveryChan)
+	producer.Produce(&message, nil)
 	fmt.Println("Done Producing message")
 	producer.Flush(15 * 1000)
 	fmt.Println("Done Flushing message")
 
 	// check if the delivery succeeded
-	event := <-deliveryChan
+	event := <-producer.Events()
 	fmt.Println("Retrieved an event from Kafka")
 	switch message := event.(type) {
 	case *kafka.Message:

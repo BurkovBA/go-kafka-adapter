@@ -50,7 +50,7 @@ func TestProducer() {
 	}
 
 	fmt.Println("Calling NewKafkaStore()")
-	var kafkaStore *KafkaStore = NewKafkaStore("localhost:29092", "", "")
+	var kafkaStore *KafkaStore = NewKafkaStore("localhost:29092", "myTopic", "")
 	err := kafkaStore.AppendMeta(ctx, callback)
 	if err != nil {
 		fmt.Printf("TestProducer() error: %s\n", err)

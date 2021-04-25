@@ -33,9 +33,12 @@ func TestAppendMeta(t *testing.T) {
 	var kafkaStore *KafkaStore = NewKafkaStore("localhost:29092", "myTopic", "")
 
 	var callback = func(writer io.Writer) error {
-		for {
-
+		msg := []byte("This is a programmatically produced message")
+		_, err := writer.Write(msg)
+		if err != nil {
+			return err
 		}
+		return nil
 	}
 
 	err := kafkaStore.AppendMeta(ctx, callback)
