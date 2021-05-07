@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math/rand"
 	"os/exec"
@@ -19,30 +20,35 @@ type KafkaAdapterTestSuite struct {
 	ConsumerGroup   string
 }
 
-func (suite *KafkaAdapterTestSuite) SetupTest() {
+func (suite *KafkaAdapterTestSuite) SetupSuite() {
 	suite.Topic = strconv.Itoa(rand.Intn(10000))
-	suite.Zookeeper = "localhost:2181"
-	suite.ConsumerGroup = "goConsumerGroup"
 	suite.BootstrapServer = "localhost:29092"
+	suite.Zookeeper = "zookeeper:2181"
+	suite.ConsumerGroup = "goConsumerGroup"
+
+	fmt.Println("SetupTest()")
 
 	// initialize topic
-	cmd := exec.Command("kafka-topics.sh", "--create", "--topic", suite.Topic, "--bootstrap-server", suite.BootstrapServer)
+	cmd := exec.Command("docker", "exec", "broker", "kafka-topics", "--create", "--topic", suite.Topic, "--bootstrap-server", suite.BootstrapServer, "--replication-factor", "1", "--partitions", "1")
 	err := cmd.Run()
 	if err != nil {
+		fmt.Println(err)
 		panic(err)
 	}
 }
 
-func (suite *KafkaAdapterTestSuite) TeadDown() {
+func (suite *KafkaAdapterTestSuite) TearDownSuite() {
+	fmt.Println("TearDown()")
+
 	// destroy Topic
-	cmd := exec.Command("kafka-topics.sh", "--zookeeper", suite.Zookeeper, "--delete", "--topic", suite.Topic)
+	cmd := exec.Command("docker", "exec", "broker", "kafka-topics", "--zookeeper", suite.Zookeeper, "--delete", "--topic", suite.Topic)
 	err := cmd.Run()
 	if err != nil {
 		panic(err)
 	}
 }
 
-func (suite *KafkaAdapterTestSuite) TestLoadMeta(t *testing.T) {
+func (suite *KafkaAdapterTestSuite) TestLoadMeta() {
 	var ctx context.Context = context.Background()
 	var kafkaStore *KafkaStore = NewKafkaStore(suite.BootstrapServer, suite.Topic, suite.ConsumerGroup)
 
@@ -60,11 +66,11 @@ func (suite *KafkaAdapterTestSuite) TestLoadMeta(t *testing.T) {
 
 	err := kafkaStore.LoadMeta(ctx, callback)
 	if err != nil {
-		t.Errorf("TestLoadMeta() error: %s\n", err)
+		suite.T().Error("TestLoadMeta() error")
 	}
 }
 
-func (suite *KafkaAdapterTestSuite) TestAppendMeta(t *testing.T) {
+func (suite *KafkaAdapterTestSuite) TestAppendMeta() {
 	var ctx context.Context = context.Background()
 	var kafkaStore *KafkaStore = NewKafkaStore(suite.BootstrapServer, suite.Topic, "")
 
@@ -79,10 +85,15 @@ func (suite *KafkaAdapterTestSuite) TestAppendMeta(t *testing.T) {
 
 	err := kafkaStore.AppendMeta(ctx, callback)
 	if err != nil {
-		t.Errorf("TestAppendMeta() error: %s\n", err)
+		suite.T().Error("TestAppendMeta() error")
+		// t.Errorf("TestAppendMeta() error: %s\n", err)
 	}
 }
 
-func TestReplaceMeta(t *testing.T) {
-	t.Skip("not implemented")
+func (suite *KafkaAdapterTestSuite) TestReplaceMeta() {
+	suite.T().Skip("not implemented")
+}
+
+func TestKafkaAdapterTestSuite(t *testing.T) {
+	suite.Run(t, new(KafkaAdapterTestSuite))
 }
