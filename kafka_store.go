@@ -203,7 +203,7 @@ func (kafkaStore KafkaStore) readMessage(consumer *kafka.Consumer, writer *io.Pi
 	// iteratively feed messages from kafka topic into the pipe
 	for {
 		fmt.Println("Reading a message from kafka")
-		msg, err := consumer.ReadMessage(-1) // use -1 to eliminate timeout and wait indefinitely or time.Second * 10 for timeout of 10 seconds
+		msg, err := consumer.ReadMessage(time.Second * 10) // use -1 to eliminate timeout and wait indefinitely or time.Second * 10 for timeout of 10 seconds
 		if err != nil {
 			return err
 		}
@@ -242,7 +242,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	// create a producer for Kafka
 	producer, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": kafkaStore.BootstrapServers})
 	if err != nil {
-		fmt.Printf("Error creating consumer: %s", err)
+		fmt.Printf("Error creating producer: %s", err)
 		return err
 	}
 	defer producer.Close()
