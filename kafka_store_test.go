@@ -16,7 +16,6 @@ import (
 
 type KafkaAdapterTestSuite struct {
 	suite.Suite
-	Topic           string
 	BootstrapServer string
 	Zookeeper       string
 	ConsumerGroup   string
