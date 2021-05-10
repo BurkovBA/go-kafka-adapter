@@ -145,12 +145,14 @@ func (suite *KafkaAdapterTestSuite) TestAppendMeta() {
 	}
 	var kafkaStore *KafkaStore = NewKafkaStore(suite.BootstrapServer, topic, "")
 
-	var callback = func(writer io.Writer) error {
+	var callback = func(writer *io.PipeWriter) error {
 		msg := []byte("This is a programmatically produced message")
 		_, err := writer.Write(msg)
 		if err != nil {
+			writer.Close()
 			return err
 		}
+		writer.Close()
 		return nil
 	}
 

@@ -232,11 +232,11 @@ func (kafkaStore KafkaStore) readMessage(consumer *kafka.Consumer, writer *io.Pi
 	}
 }
 
-func (kafkaStore KafkaStore) ReplaceMeta(ctx context.Context, callback func(writer io.Writer) error) error {
+func (kafkaStore KafkaStore) ReplaceMeta(ctx context.Context, callback func(writer *io.PipeWriter) error) error {
 	return errors.New("not implemented")
 }
 
-func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(writer io.Writer) error) error {
+func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(writer *io.PipeWriter) error) error {
 	reader, writer := io.Pipe()
 
 	// create a producer for Kafka
@@ -261,23 +261,23 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	}
 	go producerCallback(producerErrors)
 
-	buffer := make([]byte, 1000000)
-	// TODO: handle buffer overflow!!!!!!!!!!!!
 	fmt.Println("Preparing to Read()")
-	bytesRead, err := reader.Read(buffer)
-	fmt.Println("Done reading")
-
-	// handle EOF or error in the reader
-	switch err {
-	case io.EOF:
-		break
-	case nil:
-		break
-	default:
-		fmt.Printf("AppendMeta(): failed to read message: %s\n", err)
-		return err
+	payload := make([]byte, 0)
+	buffer := make([]byte, 1000000)
+	for {
+		bytesRead, err := reader.Read(buffer)
+		if err == io.EOF {
+			break
+			payload = append(payload, buffer[:bytesRead]...)
+		} else if err != nil {
+			fmt.Printf("AppendMeta(): failed to read message: %s\n", err)
+			return err
+		} else {
+			payload = append(payload, buffer[:bytesRead]...)
+		}
 	}
-	fmt.Println("Done switching err after reading")
+	fmt.Println("Done reading")
+	fmt.Printf("AppendMeta() payload = %s\n", payload)
 
 	err = <-producerErrors
 	if err != nil {
@@ -291,10 +291,8 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	// deliveryChan := make(chan kafka.Event)
 	// defer close(deliveryChan)
 
-	fmt.Println("Preparing to Produce() message")
 	// send payload to Kafka
-	payload := buffer[0:bytesRead]
-	fmt.Printf("AppendMeta() payload = %s\n", payload)
+	fmt.Println("Preparing to Produce() message")
 	fmt.Printf("kafka.PartitionAny = %d\n", kafka.PartitionAny)
 	message := kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
