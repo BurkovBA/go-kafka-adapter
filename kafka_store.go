@@ -8,19 +8,83 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Shopify/sarama"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
+
+// KafkaStoreConsumerGroupHandler is the set of actual callbacks invoked as the lifecycle hooks of a consumer group.
+// It is passed on input of sarama.ConsumerGroup.Consume() method and runs the actual business logic.
+// See the docs of ConsumerGroup.Consume(): https://github.com/Shopify/sarama/blob/master/consumer_group.go#L18
+type KafkaStoreConsumerGroupHandler struct {
+	writer   *io.PipeWriter
+	reader   *io.PipeReader
+	callback func(reader io.Reader) error
+	ready    chan bool
+	client   sarama.Client
+}
+
+func (handler *KafkaStoreConsumerGroupHandler) Setup(session sarama.ConsumerGroupSession) error {
+	close(handler.ready)
+	return nil
+}
+
+func (handler *KafkaStoreConsumerGroupHandler) Cleanup(session sarama.ConsumerGroupSession) error {
+	return nil
+}
+
+// This function is called within a goroutine, so no need to wrap it.
+// Callgraph is:
+// ConsumerGroup.Consume() -> ConsumerGroup.newSession() -> newConsumerGroupSession() -> ConsumerGroupSession.consume() -> ConsumerGroupHandler.ConsumeClaims()
+func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	// initialze the callback goroutine
+	var waitgroup sync.WaitGroup
+	waitgroup.Add(1)
+	go func() {
+		defer waitgroup.Done()
+		err := handler.callback(handler.reader)
+		if err != nil {
+			return
+		}
+	}()
+	waitgroup.Wait()
+
+	// loop through the messages
+	for message := range claim.Messages() {
+		// break the loop if we've reached the highWatermark
+		highWatermark := handler.client.GetOffset(claim.topic, claim.partition, sarama.OffsetNewest)
+		if message.Offset+1 >= highWatermark {
+			return nil
+		}
+
+		// write the message into callback through the pipe
+		_, err := handler.writer.Write(message.Value)
+		if err != nil {
+			return err
+		}
+
+		// mark the message consumer so that it will be autocommited after KafkaStoreConsumerGroupHandler.Cleanup()
+		session.MarkMessage(message, "")
+	}
+
+	return nil
+}
 
 // Kafka entities:
 // - broker - single instance of Kakfa; you might have a cluster with e.g. 3 Kafka brokers on 3 separate servers for HA
 // - topic - a single message queue, e.g. 'flats'
 // - partition - you can shard topic by some criterion into partitions, e.g. split 'flats' into 'Moscow', 'St.Petersburg', 'Novosibirsk' partitions
 // - replica - each partition can have a master and several replicas, each replica on ots broker; you can set up something like sync/async replication between them
-// - consumer - a process that reads messages from Kafka; it can listen to multiple topics and within a topic to several partitions
-// - consumer group - a set of (possibly interchangeable) consumers which have a single offset per topic partition
-// - offset - the incremental index of a message, unique within a topic partition for a consumer group
 // - producer - a process that writes messages into Kafka
-// See: https://www.oreilly.com/library/view/kafka-the-definitive/9781491936153/ch04.html
+// - offset - the incremental index of a message, unique within a topic partition for a consumer group
+// - high watermark - the offset under which the next message, committed by the producer, will be committed
+// - consumer - a process that reads messages from Kafka; it can listen to multiple topics and within a topic to several partitions
+// - consumer group - a set of (possibly interchangeable) consumers, per which a unique offset is kept for each topic partition; if you're not planning to commit offsets, you can avoid using consumer groups
+// - consumer group session - a period of time, throughout which the allocation of consumers to partitions stays the same
+// - consumer group claim - within a consumer group session a claim registers ownership of a topic partition by a consumer
+// - consumer group handler - within a consumer group session this is a set of lifecycle hooks that do consuming and setup/teardown
+
+// See kafka architecture: https://www.oreilly.com/library/view/kafka-the-definitive/9781491936153/ch04.html
+// See kafka protocol (important for understanding of Sarama implementation): https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-OffsetCommit/FetchAPI
 type KafkaStore struct {
 	BootstrapServers string // kafka brokers to negotiate the protocol with upon consumer bootstrap, default: "localhost:29092"
 	Topic            string // name of the topic that stores our data, default: "myTopic"
@@ -42,46 +106,59 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	reader, writer := io.Pipe()
 
 	// bootstrap the consumer
-	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": kafkaStore.BootstrapServers,
-		"group.id":          kafkaStore.ConsumerGroupId,
-		"auto.offset.reset": "earliest",
-	})
-	defer consumer.Close()
+	config := sarama.NewConfig()
+	config.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
+	config.Consumer.Offsets.AutoCommit.Enable = true
+	config.Consumer.Offsets.Initial = sarama.OffsetBeginning
+	config.Version = "2.3.0"
+
+	// initialize kafka client
+	client, err := sarama.NewClient(kafkaStore.BootstrapServers, config)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Created a new consumer")
+	defer client.Close()
 
-	// subscribe to topics
-	err = consumer.SubscribeTopics([]string{kafkaStore.Topic}, nil)
+	// initialize consumer group
+	consumerGroup, err := sarama.NewConsumerGroupFromClient(kafkaStore.ConsumerGroupId, client)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Subscribed to topics")
+	defer consumerGroup.Close()
+	fmt.Println("Created a new consumer group")
 
-	// initialze the callback goroutine
-	var waitgroup sync.WaitGroup
-	waitgroup.Add(1)
+	// initialize a handler object to actually process consumerGroup messages
+	handler := KafkaStoreConsumerGroupHandler{
+		ready:    make(chan (bool)),
+		writer:   writer,
+		reader:   reader,
+		callback: callback,
+		client:   client,
+	}
+
+	// start consuming
+	waitGroup := &sync.WaitGroup{}
+	waitGroup.Add(1)
 	go func() {
-		defer waitgroup.Done()
-		err2 := callback(reader)
-		if err2 != nil {
-			switch err2 {
-			case io.EOF:
+		defer waitGroup.Done()
+		for {
+			// no need to create a goroutine here, it is created automatically
+			err := consumerGroup.Consume(ctx, [1]string{kafkaStore.Topic}, &handler)
+			if err != nil {
 				return
-			default:
-				panic(err2)
 			}
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			handler.ready = make(chan bool)
 		}
 	}()
+	waitGroup.Wait()
 
-	err = kafkaStore.readMessage(consumer, writer)
-	if err != nil {
-		return err
-	}
-
-	waitgroup.Wait()
+	// TODO: handle errors
+	// TODO: handle context.Done()
 
 	return nil
 }
