@@ -1,24 +1,13 @@
 Installation instructions
 =========================
 
-Mac (Arm64 architecture)
-------------------------
-
-To install "gopkg.in/confluentinc/confluent-kafka-go.v1/kafka" on Mac Apple M1, say:
-
-- `brew install librdkafka`
-- `go get -d github.com/confluentinc/confluent-kafka-go/kafka`
-- `export LDFLAGS="-L$(brew --prefix)/opt/librdkafka/lib -L$(brew --prefix)/opt/openssl/lib"`
-- `export CPPFLAGS=-I$(brew --prefix)/opt/librdkafka/include/librdkafka`
-- `export PKG_CONFIG_PATH="$(brew --prefix)/opt/openssl/lib/pkgconfig"`
-
 Build command
 -------------
-`go build -tags dynamic main.go kafka_store.go`
+`go build main.go kafka_store.go`
 
 Test command
 ------------
-`go test -tags dynamic kafka_store.go kafka_store_test.go`
+`go test kafka_store.go kafka_store_test.go`
 
 `ok      command-line-arguments  17.199s`
 
