@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/Shopify/sarama"
-	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
 // KafkaStoreConsumerGroupHandler is the set of actual callbacks invoked as the lifecycle hooks of a consumer group.
@@ -86,15 +84,15 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 // See kafka architecture: https://www.oreilly.com/library/view/kafka-the-definitive/9781491936153/ch04.html
 // See kafka protocol (important for understanding of Sarama implementation): https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-OffsetCommit/FetchAPI
 type KafkaStore struct {
-	BootstrapServers string // kafka brokers to negotiate the protocol with upon consumer bootstrap, default: "localhost:29092"
-	Topic            string // name of the topic that stores our data, default: "myTopic"
-	ConsumerGroupId  string // id of our consumer group, default: "goConsumerGroup"
+	BootstrapServer string // kafka brokers to negotiate the protocol with upon consumer bootstrap, default: "localhost:29092"
+	Topic           string // name of the topic that stores our data, default: "myTopic"
+	ConsumerGroupId string // id of our consumer group, default: "goConsumerGroup"
 }
 
-func NewKafkaStore(BootstrapServers string, Topic string, ConsumerGroupId string) *KafkaStore {
+func NewKafkaStore(BootstrapServer string, Topic string, ConsumerGroupId string) *KafkaStore {
 	kafkaStore := &KafkaStore{}
 
-	kafkaStore.BootstrapServers = BootstrapServers
+	kafkaStore.BootstrapServer = BootstrapServer
 	kafkaStore.Topic = Topic
 	kafkaStore.ConsumerGroupId = ConsumerGroupId
 
@@ -113,7 +111,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	config.Version = "2.3.0"
 
 	// initialize kafka client
-	client, err := sarama.NewClient(kafkaStore.BootstrapServers, config)
+	client, err := sarama.NewClient(kafkaStore.BootstrapServer, config)
 	if err != nil {
 		return err
 	}
@@ -143,7 +141,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 		defer waitGroup.Done()
 		for {
 			// no need to create a goroutine here, it is created automatically
-			err := consumerGroup.Consume(ctx, [1]string{kafkaStore.Topic}, &handler)
+			err := consumerGroup.Consume(ctx, []string{kafkaStore.Topic}, &handler)
 			if err != nil {
 				return
 			}
@@ -163,152 +161,6 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	return nil
 }
 
-// Implementation of Kafka consumer polling operation via a low-level Poll() function.
-// This implementation we won't be able to Seek/Assign the offset.
-// Mostly stolen from: https://github.com/martinhynar/kafka-consumer/blob/AssignedPartitions/kafka-consumer.go
-func (kafkaStore KafkaStore) poll(consumer *kafka.Consumer, writer *io.PipeWriter) error {
-	fmt.Println("Entering poll()")
-
-	run := true
-	for run == true {
-		fmt.Println("Running an iteration of poll")
-		event := consumer.Poll(10000)
-		if event == nil {
-			fmt.Println("Timeout in Poll(), Event is nil")
-			continue
-		}
-
-		switch e := event.(type) {
-		case kafka.AssignedPartitions:
-			fmt.Println("Partitions assigned")
-			for _, ap := range e.Partitions {
-				fmt.Printf("%s[%d]@%v", *ap.Topic, ap.Partition, ap.Offset)
-			}
-			consumer.Assign(e.Partitions)
-
-			var start kafka.Offset = kafka.OffsetBeginning
-			var searchTP []kafka.TopicPartition = make([]kafka.TopicPartition, len(e.Partitions))
-			for i, ap := range e.Partitions {
-				searchTP[i] = kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: ap.Partition, Offset: start}
-			}
-			timeoutMs := 5000
-			rewindTP, err := consumer.OffsetsForTimes(searchTP, timeoutMs)
-			if err != nil {
-				fmt.Printf("Timestamp offset search error: %v\n", err)
-			} else {
-				err = consumer.Assign(rewindTP)
-				fmt.Println("Partition re-assignment")
-				for _, ap := range rewindTP {
-					fmt.Printf("%s[%d]@%v", *ap.Topic, ap.Partition, ap.Offset)
-				}
-				if err != nil {
-					fmt.Printf("Partition assignment error: %v\n", err)
-				}
-			}
-		case kafka.RevokedPartitions:
-			fmt.Printf("%% %v\n", e)
-			consumer.Unassign()
-
-		case *kafka.Message:
-			fmt.Printf("kafka@%d : %s", milliseconds(&e.Timestamp), string(e.Value))
-		case kafka.PartitionEOF:
-			fmt.Printf("%% Reached %v\n", e)
-			run = false
-		case kafka.Error:
-			fmt.Printf("%% Error: %v\n", e)
-			run = false
-		default:
-			fmt.Printf("Ignored %v\n", e)
-		}
-	}
-
-	return nil
-}
-
-func milliseconds(moment *time.Time) int64 {
-	return moment.UnixNano() / int64(time.Millisecond)
-}
-
-// Reset the offsets of topic partitions, the consumer listens from, to the beginning.
-//
-// Kafka has lower-level and higher-level APIs for assigning consumers to partitions:
-// - Assign() manually assigns a consumer to a specific partition of a topic.
-// - Subscirbe() assigns a consumer to a topic and dynamically rebalances consumers in
-//   that consumer group between partitions, should need arise. This is the preferred way.
-func (kafkaStore KafkaStore) resetTopicPartitionsOffsets(consumer *kafka.Consumer) error {
-	// get current topic partitions
-	metadata, err := consumer.GetMetadata(&kafkaStore.Topic, false, 10000)
-
-	// define that we want the earliest offsets available for each topic partition
-	var modifiedTopicPartitions []kafka.TopicPartition = make([]kafka.TopicPartition, len(metadata.Topics[kafkaStore.Topic].Partitions))
-	var start kafka.Offset = kafka.OffsetBeginning
-	for index, partitionMetadata := range metadata.Topics[kafkaStore.Topic].Partitions {
-		modifiedTopicPartitions[index] = kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: partitionMetadata.ID, Offset: start}
-		fmt.Printf("resetTopicPartitionsOffsets() preparing to re-assign offsets: %s[%d]@%v\n", *modifiedTopicPartitions[index].Topic, modifiedTopicPartitions[index].Partition, modifiedTopicPartitions[index].Offset)
-	}
-
-	// query the earliest offset for each partition to reset to
-	resultTopicPartitions, err := consumer.OffsetsForTimes(modifiedTopicPartitions, 10000)
-	if err != nil {
-		fmt.Printf("Timestamp offset search error: %v\n", err)
-		return err
-	}
-
-	// assign the earliest offsets available, check assignment went well
-	err = consumer.Assign(resultTopicPartitions)
-	fmt.Println("Partition re-assignment")
-	for _, partition := range resultTopicPartitions {
-		fmt.Printf("resetTopicPartitionsOffsets() re-assigned offsets: %s[%d]@%v\n", *partition.Topic, partition.Partition, partition.Offset)
-	}
-	if err != nil {
-		fmt.Printf("Partition assignment error: %v\n", err)
-		return err
-	}
-
-	return nil
-}
-
-// Implementation of Kafka consumer polling operation via a high-level ReadMessage() function.
-// Apparently with this implementation we won't be able to Seek/Assign the offset.
-func (kafkaStore KafkaStore) readMessage(consumer *kafka.Consumer, writer *io.PipeWriter) error {
-	// reset topic partitions offsets to the earliest first
-	err := kafkaStore.resetTopicPartitionsOffsets(consumer)
-	if err != nil {
-		return err
-	}
-
-	// iteratively feed messages from kafka topic into the pipe
-	for {
-		fmt.Println("Reading a message from kafka")
-		msg, err := consumer.ReadMessage(time.Second * 10) // use -1 to eliminate timeout and wait indefinitely or time.Second * 10 for timeout of 10 seconds
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("Message on %s: %s\n", msg.TopicPartition, string(msg.Value))
-		_, err = writer.Write(msg.Value)
-		if err != nil {
-			return err
-		}
-
-		// get the offset of the last readable (i.e. fully replicated) message - highWatermark;
-		// see: https://github.com/confluentinc/confluent-kafka-go/issues/557
-		_, highWatermark, err := consumer.QueryWatermarkOffsets(kafkaStore.Topic, msg.TopicPartition.Partition, 10000)
-		if err != nil {
-			return err
-		}
-
-		// close the writer, if the consumer's offset has reached highWatermark
-		currentOffset := int64(msg.TopicPartition.Offset)
-		fmt.Printf("currentOffset = %d, highWatermark = %d\n", currentOffset, highWatermark)
-		if highWatermark == currentOffset+1 {
-			fmt.Printf("Reached highWatermark, closing the writer.\n")
-			writer.Close()
-			return nil
-		}
-	}
-}
-
 func (kafkaStore KafkaStore) ReplaceMeta(ctx context.Context, callback func(writer *io.PipeWriter) error) error {
 	return errors.New("not implemented")
 }
@@ -317,7 +169,12 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	reader, writer := io.Pipe()
 
 	// create a producer for Kafka
-	producer, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": kafkaStore.BootstrapServers})
+	config := sarama.NewConfig()
+	config.Producer.Partitioner = sarama.RoundRobinPartitioner
+	config.Producer.RequiredAcks = sarama.WaitForAll
+	config.Producer.Return.Successes = true
+
+	producer, err := sarama.NewSyncProducer([]string{kafkaStore.BootstrapServer}, config)
 	if err != nil {
 		fmt.Printf("Error creating producer: %s", err)
 		return err
@@ -325,7 +182,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	defer producer.Close()
 	fmt.Println("Initialized new producer")
 
-	// call the callback
+	// start the callback in a goroutine
 	producerErrors := make(chan error, 0)
 	producerCallback := func(producerErrors chan error) {
 		err = callback(writer)
@@ -338,6 +195,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	}
 	go producerCallback(producerErrors)
 
+	// read a message from the callback
 	fmt.Println("Preparing to Read()")
 	payload := make([]byte, 0)
 	buffer := make([]byte, 1000000)
@@ -356,6 +214,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	fmt.Println("Done reading")
 	fmt.Printf("AppendMeta() payload = %s\n", payload)
 
+	// check for read errors
 	err = <-producerErrors
 	if err != nil {
 		fmt.Printf("AppendMeta(): Failed to receive message from callback: %s \n", err)
@@ -363,39 +222,19 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	}
 	fmt.Println("Done checking producer err")
 
-	// Optional delivery channel, if not specified the Producer object's
-	// .Events channel is used.
-	// deliveryChan := make(chan kafka.Event)
-	// defer close(deliveryChan)
-
 	// send payload to Kafka
 	fmt.Println("Preparing to Produce() message")
-	fmt.Printf("kafka.PartitionAny = %d\n", kafka.PartitionAny)
-	message := kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
-		Value:          []byte(payload),
+	message := &sarama.ProducerMessage{
+		Topic:     kafkaStore.Topic,
+		Partition: -1,
+		Value:     sarama.StringEncoder(payload),
 	}
-	producer.Produce(&message, nil)
-	fmt.Println("Done Producing message")
-	producer.Flush(15 * 1000)
-	fmt.Println("Done Flushing message")
 
-	// check if the delivery succeeded
-	event := <-producer.Events()
-	fmt.Println("Retrieved an event from Kafka")
-	switch message := event.(type) {
-	case *kafka.Message:
-		if message.TopicPartition.Error != nil {
-			fmt.Printf("AppendMeta(): delivery to Kafka failed: %v\n", message.TopicPartition.Error)
-			return message.TopicPartition.Error
-		} else {
-			fmt.Printf("AppendMeta(): delivered message to topic %s [%d] at offset %v\n",
-				*message.TopicPartition.Topic, message.TopicPartition.Partition, message.TopicPartition.Offset)
-		}
-	default:
-		fmt.Printf("Producer event is not a Kafka message")
+	partition, offset, err := producer.SendMessage(message)
+	if err != nil {
+		fmt.Printf("Failed to deliver message %s to partition %s at offset &s: ", payload, partition, offset, err)
+		return err
 	}
-	fmt.Println("Done retrieving event from Kafka")
 
 	return nil
 }
