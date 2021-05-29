@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/Shopify/sarama"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 )
@@ -22,7 +22,7 @@ type KafkaAdapterTestSuite struct {
 }
 
 func (suite *KafkaAdapterTestSuite) SetupSuite() {
-	suite.BootstrapServer = "localhost:29092"
+	suite.BootstrapServer = "localhost:9092"
 	suite.Zookeeper = "zookeeper:2181"
 	suite.ConsumerGroup = "goConsumerGroup"
 
@@ -95,19 +95,25 @@ func (suite *KafkaAdapterTestSuite) TestLoadMeta() {
 	// }
 
 	// produce a message programmatically (console producer is meant to be used interactively and is glitchy)
-	producer, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": kafkaStore.BootstrapServers})
+	// create a producer for Kafka
+	config := sarama.NewConfig()
+	config.Producer.Partitioner = sarama.NewRoundRobinPartitioner
+	config.Producer.RequiredAcks = sarama.WaitForAll
+	config.Producer.Return.Successes = true
+	producer, err := sarama.NewSyncProducer([]string{kafkaStore.BootstrapServer}, config)
 	if err != nil {
 		fmt.Printf("Error creating producer: %s", err)
 		panic(err)
 	}
 	defer producer.Close()
 
-	message := kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &kafkaStore.Topic, Partition: kafka.PartitionAny},
-		Value:          []byte("foobar"),
+	message := &sarama.ProducerMessage{
+		Topic:     kafkaStore.Topic,
+		Partition: -1,
+		Value:     sarama.StringEncoder("foobar"),
 	}
-	producer.Produce(&message, nil)
-	producer.Flush(15 * 1000)
+
+	_, _, err = producer.SendMessage(message)
 
 	// prepare a callback for consumer
 	data := make([]byte, 0)

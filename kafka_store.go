@@ -91,7 +91,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 // See kafka architecture: https://www.oreilly.com/library/view/kafka-the-definitive/9781491936153/ch04.html
 // See kafka protocol (important for understanding of Sarama implementation): https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-OffsetCommit/FetchAPI
 type KafkaStore struct {
-	BootstrapServer string // kafka brokers to negotiate the protocol with upon consumer bootstrap, default: "localhost:29092"
+	BootstrapServer string // kafka brokers to negotiate the protocol with upon consumer bootstrap, default: "localhost:9092"
 	Topic           string // name of the topic that stores our data, default: "myTopic"
 	ConsumerGroupId string // id of our consumer group, default: "goConsumerGroup"
 }
@@ -243,7 +243,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 
 	partition, offset, err := producer.SendMessage(message)
 	if err != nil {
-		fmt.Printf("Failed to deliver message %s to partition %s at offset &s: ", payload, partition, offset, err)
+		fmt.Printf("Failed to deliver message %s to partition %d at offset %d: %s", payload, partition, offset, err)
 		return err
 	}
 

@@ -25,6 +25,9 @@ https://kafka.apache.org/quickstart
 Enter the kafka container with `docker exec -it broker /bin/bash`. Then in its 
 shell you can run some monitoring and management commands.
 
+### Create a topic
+`kafka-topics --create --topic myTopic --bootstrap-server localhost:9092`
+
 ### List topics
 `kafka-topics --list --zookeeper zookeeper:2181`
 
