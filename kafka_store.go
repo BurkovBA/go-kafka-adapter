@@ -49,13 +49,20 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 	// loop through the messages
 	for message := range claim.Messages() {
 		// break the loop if we've reached the highWatermark
-		highWatermark := handler.client.GetOffset(claim.topic, claim.partition, sarama.OffsetNewest)
+		topic := claim.Topic()
+		partition := claim.Partition()
+		highWatermark, err := handler.client.GetOffset(topic, partition, sarama.OffsetNewest)
+		if err != nil {
+			fmt.Printf("Failed to read highWatermark: %s", err)
+			return err
+		}
+
 		if message.Offset+1 >= highWatermark {
 			return nil
 		}
 
 		// write the message into callback through the pipe
-		_, err := handler.writer.Write(message.Value)
+		_, err = handler.writer.Write(message.Value)
 		if err != nil {
 			return err
 		}
@@ -107,11 +114,15 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	config := sarama.NewConfig()
 	config.Consumer.Group.Rebalance.Strategy = sarama.BalanceStrategyRoundRobin
 	config.Consumer.Offsets.AutoCommit.Enable = true
-	config.Consumer.Offsets.Initial = sarama.OffsetBeginning
-	config.Version = "2.3.0"
+	config.Consumer.Offsets.Initial = sarama.OffsetOldest
+	version, err := sarama.ParseKafkaVersion("2.3.0")
+	if err != nil {
+		return err
+	}
+	config.Version = version
 
 	// initialize kafka client
-	client, err := sarama.NewClient(kafkaStore.BootstrapServer, config)
+	client, err := sarama.NewClient([]string{kafkaStore.BootstrapServer}, config)
 	if err != nil {
 		return err
 	}
@@ -170,7 +181,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 
 	// create a producer for Kafka
 	config := sarama.NewConfig()
-	config.Producer.Partitioner = sarama.RoundRobinPartitioner
+	config.Producer.Partitioner = sarama.NewRoundRobinPartitioner
 	config.Producer.RequiredAcks = sarama.WaitForAll
 	config.Producer.Return.Successes = true
 

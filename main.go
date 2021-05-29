@@ -32,13 +32,12 @@ func TestConsumer() {
 
 	var kafkaStore *KafkaStore = NewKafkaStore("localhost:29092", "myTopic", "goConsumerGroup")
 	kafkaStore.LoadMeta(ctx, callback)
-	return
 }
 
 func TestProducer() {
 	var ctx context.Context = context.Background()
 
-	var callback = func(writer io.Writer) error {
+	var callback = func(writer *io.PipeWriter) error {
 		fmt.Println("Called callback()")
 		msg := []byte("This is a programmatically produced message 1")
 		_, err := writer.Write(msg)
@@ -55,7 +54,6 @@ func TestProducer() {
 	if err != nil {
 		fmt.Printf("TestProducer() error: %s\n", err)
 	}
-	return
 }
 
 func main() {
