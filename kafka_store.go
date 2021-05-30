@@ -40,14 +40,12 @@ func (handler *KafkaStoreConsumerGroupHandler) isAtHighwatermark(session sarama.
 		return false, err
 	}
 
-	fmt.Printf("highWatermark = %d, nextOffset = %d\n", highWatermark, nextOffset)
+	fmt.Printf("highWatermark = %d, offset = %d\n", highWatermark, offset)
 
 	// if we've reached highWatermark, return
-	if offset+1 >= highWatermark {
-		fmt.Printf("nextOffset+1 (%d) >= highWatermark (%d)\n", offset+1, highWatermark)
+	if offset >= highWatermark {
 		return true, nil
 	} else {
-		fmt.Printf("nextOffset = %d\n", nextOffset)
 		return false, nil
 	}
 }
@@ -71,7 +69,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		return err
 	}
 	if isAtHighWatermark {
-		fmt.Println("Already at highWatermark\n")
+		fmt.Println("Already at highWatermark")
 		return nil
 	}
 
@@ -90,7 +88,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		session.MarkMessage(message, "")
 
 		// if we've reached highWatermark, return
-		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim, message.Offset)
+		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim, message.Offset+1)
 		if err != nil {
 			return err
 		}
@@ -168,7 +166,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 
 	// initialize a handler object to actually process consumerGroup messages
 	handler := KafkaStoreConsumerGroupHandler{
-		status:   nil,
+		status:   make(chan error),
 		writer:   writer,
 		reader:   reader,
 		callback: callback,
@@ -197,7 +195,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 
 			// We've reached high watermark, finish processing
 			if err == nil {
-				fmt.Println("Finishing processing, we've reached the highWatermark")
+				fmt.Println("Finish processing, we've reached the highWatermark")
 				handler.status <- nil
 				return
 			}
@@ -209,7 +207,6 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 		fmt.Println("Context cancelled LoadMeta() execution")
 		return nil
 	case err := <-handler.status:
-		fmt.Printf("Received err from select: %s\n", err)
 		if err != nil {
 			fmt.Printf("Got an error, while running Consume(): %s \n", err)
 		} else {
