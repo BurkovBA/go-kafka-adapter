@@ -34,37 +34,39 @@ func (handler *KafkaStoreConsumerGroupHandler) Cleanup(session sarama.ConsumerGr
 // Callgraph is:
 // ConsumerGroup.Consume() -> ConsumerGroup.newSession() -> newConsumerGroupSession() -> ConsumerGroupSession.consume() -> ConsumerGroupHandler.ConsumeClaims()
 func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	fmt.Println("Called ConsumeClaim()")
+
 	// initialze the callback goroutine
-	var waitgroup sync.WaitGroup
-	waitgroup.Add(1)
 	go func() {
-		defer waitgroup.Done()
 		err := handler.callback(handler.reader)
 		if err != nil {
 			return
 		}
 	}()
-	waitgroup.Wait()
 
 	// loop through the messages
+	fmt.Println("Starting to loop through the messages")
 	for message := range claim.Messages() {
 		// break the loop if we've reached the highWatermark
 		topic := claim.Topic()
 		partition := claim.Partition()
 		highWatermark, err := handler.client.GetOffset(topic, partition, sarama.OffsetNewest)
 		if err != nil {
-			fmt.Printf("Failed to read highWatermark: %s", err)
+			fmt.Printf("Failed to read highWatermark: %s\n", err)
 			return err
 		}
 
-		if message.Offset+1 >= highWatermark {
-			return nil
-		}
+		fmt.Printf("ConsumeClaim() processing message: '%s', offset: %d, highWatermark: %d \n", message.Value, message.Offset, highWatermark)
 
 		// write the message into callback through the pipe
 		_, err = handler.writer.Write(message.Value)
 		if err != nil {
 			return err
+		}
+
+		if message.Offset+1 >= highWatermark {
+			fmt.Printf("message.Offset+1 (%d) >= highWatermark (%d)\n", message.Offset+1, highWatermark)
+			return nil
 		}
 
 		// mark the message consumer so that it will be autocommited after KafkaStoreConsumerGroupHandler.Cleanup()
@@ -150,9 +152,14 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	waitGroup.Add(1)
 	go func() {
 		defer waitGroup.Done()
+		// infinite loop is required in case of rebalancing, see:
+		// https://github.com/Shopify/sarama/blob/master/examples/consumergroup/main.go
 		for {
 			// no need to create a goroutine here, it is created automatically
+			fmt.Println("Preparing to start consumerGroup.Consume()")
 			err := consumerGroup.Consume(ctx, []string{kafkaStore.Topic}, &handler)
+
+			// TODO: handle errors
 			if err != nil {
 				return
 			}
@@ -161,12 +168,16 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 				return
 			}
 
+			// We've reached high watermark, finish processing
+			if err == nil {
+				return
+			}
+
 			handler.ready = make(chan bool)
 		}
 	}()
 	waitGroup.Wait()
 
-	// TODO: handle errors
 	// TODO: handle context.Done()
 
 	return nil
