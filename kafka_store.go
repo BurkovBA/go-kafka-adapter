@@ -90,7 +90,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		session.MarkMessage(message, "")
 
 		// if we've reached highWatermark, return
-		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim, message.offset)
+		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim, message.Offset)
 		if err != nil {
 			return err
 		}
