@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/Shopify/sarama"
 )
@@ -17,17 +16,46 @@ type KafkaStoreConsumerGroupHandler struct {
 	writer   *io.PipeWriter
 	reader   *io.PipeReader
 	callback func(reader io.Reader) error
-	ready    chan bool
+	status   chan error
 	client   sarama.Client
 }
 
 func (handler *KafkaStoreConsumerGroupHandler) Setup(session sarama.ConsumerGroupSession) error {
-	close(handler.ready)
 	return nil
 }
 
 func (handler *KafkaStoreConsumerGroupHandler) Cleanup(session sarama.ConsumerGroupSession) error {
 	return nil
+}
+
+// Check, if the consumerGroup is currently at highWatermark
+func (handler *KafkaStoreConsumerGroupHandler) isAtHighwatermark(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) (bool, error) {
+	// check, if we're already reached the highWatermark
+	topic := claim.Topic()
+	partition := claim.Partition()
+
+	highWatermark, err := handler.client.GetOffset(topic, partition, sarama.OffsetNewest)
+	if err != nil {
+		fmt.Printf("Failed to read high watermark: %s\n", err)
+		return false, err
+	}
+
+	nextOffset, err := claim.Offset
+	if err != nil {
+		fmt.Printf("Failed to read next offset: %s\n", err)
+		return false, err
+	}
+
+	fmt.Printf("highWatermark = %d, nextOffset = %d\n", highWatermark, nextOffset)
+
+	// if we've reached highWatermark, return
+	if nextOffset+1 >= highWatermark {
+		fmt.Printf("nextOffset+1 (%d) >= highWatermark (%d)\n", nextOffset+1, highWatermark)
+		return true, nil
+	} else {
+		fmt.Printf("nextOffset = %d\n", nextOffset)
+		return false, nil
+	}
 }
 
 // This function is called within a goroutine, so no need to wrap it.
@@ -44,33 +72,39 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		}
 	}()
 
+	isAtHighWatermark, err := handler.isAtHighwatermark(session, claim)
+	if err != nil {
+		return err
+	}
+	if isAtHighWatermark {
+		fmt.Println("Already at highWatermark\n")
+		return nil
+	}
+
 	// loop through the messages
 	fmt.Println("Starting to loop through the messages")
 	for message := range claim.Messages() {
-		// break the loop if we've reached the highWatermark
-		topic := claim.Topic()
-		partition := claim.Partition()
-		highWatermark, err := handler.client.GetOffset(topic, partition, sarama.OffsetNewest)
-		if err != nil {
-			fmt.Printf("Failed to read highWatermark: %s\n", err)
-			return err
-		}
-
-		fmt.Printf("ConsumeClaim() processing message: '%s', offset: %d, highWatermark: %d \n", message.Value, message.Offset, highWatermark)
+		fmt.Printf("ConsumeClaim() processing message: '%s', offset: %d\n", message.Value, message.Offset)
 
 		// write the message into callback through the pipe
-		_, err = handler.writer.Write(message.Value)
+		_, err := handler.writer.Write(message.Value)
 		if err != nil {
 			return err
-		}
-
-		if message.Offset+1 >= highWatermark {
-			fmt.Printf("message.Offset+1 (%d) >= highWatermark (%d)\n", message.Offset+1, highWatermark)
-			return nil
 		}
 
 		// mark the message consumer so that it will be autocommited after KafkaStoreConsumerGroupHandler.Cleanup()
 		session.MarkMessage(message, "")
+
+		// if we've reached highWatermark, return
+		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim)
+		if err != nil {
+			return err
+		}
+
+		if isAtHighWatermark {
+			fmt.Printf("message.Offset+1 (%d) >= highWatermark\n", message.Offset+1)
+			return nil
+		}
 	}
 
 	return nil
@@ -140,7 +174,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 
 	// initialize a handler object to actually process consumerGroup messages
 	handler := KafkaStoreConsumerGroupHandler{
-		ready:    make(chan (bool)),
+		status:   nil,
 		writer:   writer,
 		reader:   reader,
 		callback: callback,
@@ -148,10 +182,7 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 	}
 
 	// start consuming
-	waitGroup := &sync.WaitGroup{}
-	waitGroup.Add(1)
 	go func() {
-		defer waitGroup.Done()
 		// infinite loop is required in case of rebalancing, see:
 		// https://github.com/Shopify/sarama/blob/master/examples/consumergroup/main.go
 		for {
@@ -161,24 +192,37 @@ func (kafkaStore KafkaStore) LoadMeta(ctx context.Context, callback func(reader 
 
 			// TODO: handle errors
 			if err != nil {
+				handler.status <- err
 				return
 			}
 
 			if ctx.Err() != nil {
+				handler.status <- ctx.Err()
 				return
 			}
 
 			// We've reached high watermark, finish processing
 			if err == nil {
+				fmt.Println("Finishing processing, we've reached the highWatermark")
+				handler.status <- nil
 				return
 			}
-
-			handler.ready = make(chan bool)
 		}
 	}()
-	waitGroup.Wait()
 
-	// TODO: handle context.Done()
+	select {
+	case <-ctx.Done():
+		fmt.Println("Context cancelled LoadMeta() execution")
+		return nil
+	case err := <-handler.status:
+		fmt.Printf("Received err from select: %s\n", err)
+		if err != nil {
+			fmt.Printf("Got an error, while running Consume(): %s \n", err)
+		} else {
+			fmt.Println("Successfully exited from Consume()")
+		}
+		return err
+	}
 
 	return nil
 }
