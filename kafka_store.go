@@ -29,7 +29,7 @@ func (handler *KafkaStoreConsumerGroupHandler) Cleanup(session sarama.ConsumerGr
 }
 
 // Check, if the consumerGroup is currently at highWatermark
-func (handler *KafkaStoreConsumerGroupHandler) isAtHighwatermark(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) (bool, error) {
+func (handler *KafkaStoreConsumerGroupHandler) isAtHighwatermark(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim, offset int64) (bool, error) {
 	// check, if we're already reached the highWatermark
 	topic := claim.Topic()
 	partition := claim.Partition()
@@ -40,17 +40,11 @@ func (handler *KafkaStoreConsumerGroupHandler) isAtHighwatermark(session sarama.
 		return false, err
 	}
 
-	nextOffset, err := claim.Offset
-	if err != nil {
-		fmt.Printf("Failed to read next offset: %s\n", err)
-		return false, err
-	}
-
 	fmt.Printf("highWatermark = %d, nextOffset = %d\n", highWatermark, nextOffset)
 
 	// if we've reached highWatermark, return
-	if nextOffset+1 >= highWatermark {
-		fmt.Printf("nextOffset+1 (%d) >= highWatermark (%d)\n", nextOffset+1, highWatermark)
+	if offset+1 >= highWatermark {
+		fmt.Printf("nextOffset+1 (%d) >= highWatermark (%d)\n", offset+1, highWatermark)
 		return true, nil
 	} else {
 		fmt.Printf("nextOffset = %d\n", nextOffset)
@@ -72,7 +66,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		}
 	}()
 
-	isAtHighWatermark, err := handler.isAtHighwatermark(session, claim)
+	isAtHighWatermark, err := handler.isAtHighwatermark(session, claim, claim.InitialOffset())
 	if err != nil {
 		return err
 	}
@@ -96,7 +90,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		session.MarkMessage(message, "")
 
 		// if we've reached highWatermark, return
-		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim)
+		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim, message.offset)
 		if err != nil {
 			return err
 		}
