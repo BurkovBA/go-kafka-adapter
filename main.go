@@ -39,12 +39,17 @@ func TestProducer() {
 
 	var callback = func(writer *io.PipeWriter) error {
 		fmt.Println("Called callback()")
+
+		defer writer.Close()
 		msg := []byte("This is a programmatically produced message 1")
+
+		fmt.Println("Writing the message in callback")
 		_, err := writer.Write(msg)
 		if err != nil {
 			fmt.Printf("Error encountered while Writing: %s \n", err)
 			return err
 		}
+
 		return nil
 	}
 
@@ -60,5 +65,6 @@ func main() {
 	// go func() {
 	// log.Println(http.ListenAndServe("localhost:6060", nil))
 	// }()
-	TestProducer()
+	// TestProducer()
+	TestConsumer()
 }

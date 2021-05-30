@@ -211,19 +211,22 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	payload := make([]byte, 0)
 	buffer := make([]byte, 1000000)
 	for {
+		fmt.Println("Calling Read()")
 		bytesRead, err := reader.Read(buffer)
 		if err == io.EOF {
-			break
+			fmt.Println("Received EOF in Read()")
 			payload = append(payload, buffer[:bytesRead]...)
+			break
 		} else if err != nil {
 			fmt.Printf("AppendMeta(): failed to read message: %s\n", err)
 			return err
 		} else {
+			fmt.Println("Read() without exceptions")
 			payload = append(payload, buffer[:bytesRead]...)
 		}
 	}
 	fmt.Println("Done reading")
-	fmt.Printf("AppendMeta() payload = %s\n", payload)
+	fmt.Printf("AppendMeta() payload = '%s'\n", payload)
 
 	// check for read errors
 	err = <-producerErrors
@@ -234,7 +237,7 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	fmt.Println("Done checking producer err")
 
 	// send payload to Kafka
-	fmt.Println("Preparing to Produce() message")
+	fmt.Printf("Preparing to Produce() message: '%s'\n", payload)
 	message := &sarama.ProducerMessage{
 		Topic:     kafkaStore.Topic,
 		Partition: -1,
@@ -243,9 +246,10 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 
 	partition, offset, err := producer.SendMessage(message)
 	if err != nil {
-		fmt.Printf("Failed to deliver message %s to partition %d at offset %d: %s", payload, partition, offset, err)
+		fmt.Printf("Failed to deliver message %s to partition %d at offset %d: %s\n", payload, partition, offset, err)
 		return err
 	}
+	fmt.Printf("Done Produce() message: '%s'\n", payload)
 
 	return nil
 }

@@ -33,3 +33,9 @@ shell you can run some monitoring and management commands.
 
 ### Describe partitions and replicas of a specific topic
 `kafka-topics --bootstrap-server localhost:9092 --topic myTopic --describe`
+
+### Read messages with a console consumer
+`kafka-console-consumer --topic myTopic --from-beginning --bootstrap-server localhost:9092`
+
+### Write messages with a console producer
+`kafka-console-producer --topic myTopic --bootstrap-server localhost:9092`
