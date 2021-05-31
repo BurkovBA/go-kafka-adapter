@@ -22,7 +22,7 @@ type KafkaAdapterTestSuite struct {
 }
 
 func (suite *KafkaAdapterTestSuite) SetupSuite() {
-	suite.BootstrapServer = "localhost:9092"
+	suite.BootstrapServer = "localhost:29092"
 	suite.Zookeeper = "zookeeper:2181"
 	suite.ConsumerGroup = "goConsumerGroup"
 

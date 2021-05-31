@@ -87,7 +87,7 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		// mark the message consumer so that it will be autocommited after KafkaStoreConsumerGroupHandler.Cleanup()
 		session.MarkMessage(message, "")
 
-		// if we've reached highWatermark, return
+		// if we've reached highWatermark, return; note that here we add 1 to message.Offset to compare it with highWatermark
 		isAtHighWatermark, err = handler.isAtHighwatermark(session, claim, message.Offset+1)
 		if err != nil {
 			return err
