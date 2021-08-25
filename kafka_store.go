@@ -42,8 +42,8 @@ func (handler *KafkaStoreConsumerGroupHandler) isAtHighwatermark(session sarama.
 
 	fmt.Printf("highWatermark = %d, offset = %d\n", highWatermark, offset)
 
-	// if we've reached highWatermark, return
-	if offset >= highWatermark {
+	// if we've reached highWatermark or there are no messages in kafka at all, return
+	if offset >= highWatermark || highWatermark == 0 {
 		return true, nil
 	} else {
 		return false, nil
@@ -62,6 +62,11 @@ func (handler *KafkaStoreConsumerGroupHandler) ConsumeClaim(session sarama.Consu
 		if err != nil {
 			return
 		}
+	}()
+
+	defer func() {
+		// close the reader, otherwise may be blocked.
+		handler.reader.Close()
 	}()
 
 	isAtHighWatermark, err := handler.isAtHighwatermark(session, claim, claim.InitialOffset())
@@ -243,6 +248,10 @@ func (kafkaStore KafkaStore) AppendMeta(ctx context.Context, callback func(write
 	producerErrors := make(chan error, 0)
 	producerCallback := func(producerErrors chan error) {
 		err = callback(writer)
+
+		// otherwise will be blocked.
+		writer.Close()
+
 		if err != nil {
 			fmt.Printf("Error in callback: %s", err)
 			producerErrors <- err
